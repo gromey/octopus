@@ -15,7 +15,6 @@ import (
 // FileInfo represents file information including its absolute and relative paths, and the file's hash.
 type FileInfo struct {
 	os.FileInfo        // Embedding the standard FileInfo struct from the os package.
-	PathAbs     string // Absolute path of the file.
 	PathRel     string // Relative path of the file with respect to the root.
 	Hash        string // Hash of the file's content (optional).
 }
@@ -27,10 +26,15 @@ type FileInfo struct {
 //   - mask: list of file extensions to include or exclude based on the 'include' flag.
 //   - include: if true, only include files matching the mask; if false, exclude them.
 func Exec(root string, hashFunc func() hash.Hash, mask []string, include bool) ([]FileInfo, error) {
+	rooter, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, fmt.Errorf("open root: %w", err)
+	}
+
 	r := &dirReader{
 		fileChan:  make(chan FileInfo),
 		errorChan: make(chan error),
-		root:      root,
+		root:      rooter,
 		hashFunc:  hashFunc,
 		mask:      mask,
 		include:   include,
@@ -48,11 +52,11 @@ func Exec(root string, hashFunc func() hash.Hash, mask []string, include bool) (
 type dirReader struct {
 	swg       sync.WaitGroup
 	wg        sync.WaitGroup
+	root      *os.Root
 	fileChan  chan FileInfo
 	errorChan chan error
 	hashFunc  func() hash.Hash
 	mask      []string
-	root      string
 	include   bool
 }
 
@@ -82,7 +86,7 @@ func (r *dirReader) readDirectoryConcurrent() ([]FileInfo, error) {
 
 	// Start reading the root directory.
 	r.wg.Add(1)
-	go r.readDirectory(r.root, "")
+	go r.readDirectory(".", "")
 	r.wg.Wait() // Wait for all directory and file processing to complete.
 
 	// Close the channels after processing is done.
@@ -102,7 +106,7 @@ func (r *dirReader) readDirectoryConcurrent() ([]FileInfo, error) {
 func (r *dirReader) readDirectory(root, rel string) {
 	defer r.wg.Done() // Ensure the WaitGroup is decremented when done.
 
-	dir, err := os.Open(root)
+	dir, err := r.root.Open(root)
 	if err != nil {
 		r.errorChan <- fmt.Errorf("open %s: %w", root, err)
 		return
@@ -118,12 +122,10 @@ func (r *dirReader) readDirectory(root, rel string) {
 
 	// Iterate over all files and directories in the current directory.
 	for _, file := range files {
-		abs := filepath.Join(root, file.Name())
-
 		if file.IsDir() {
 			// If the entry is a directory, recursively read its contents.
 			r.wg.Add(1)
-			go r.readDirectory(abs, filepath.Join(rel, file.Name()))
+			go r.readDirectory(filepath.Join(root, file.Name()), filepath.Join(rel, file.Name()))
 			continue
 		}
 
@@ -133,29 +135,8 @@ func (r *dirReader) readDirectory(root, rel string) {
 		}
 
 		r.wg.Add(1)
-		go r.getFileInfo(abs, rel, file)
+		go r.getFileInfo(rel, file)
 	}
-}
-
-// getFileInfo processes an individual file, optionally computes its hash.
-func (r *dirReader) getFileInfo(abs string, rel string, file os.FileInfo) {
-	defer r.wg.Done() // Ensure the WaitGroup is decremented when done.
-
-	fi := FileInfo{
-		FileInfo: file,
-		PathAbs:  abs,
-		PathRel:  rel,
-	}
-
-	// If a hash function is provided, compute the file's hash.
-	if r.hashFunc != nil {
-		var err error
-		if fi.Hash, err = r.computeHash(fi.PathAbs); err != nil {
-			r.errorChan <- fmt.Errorf("calculate hash sum %s: %w", fi.PathAbs, err)
-		}
-	}
-
-	r.fileChan <- fi
 }
 
 // includedInMask checks if the file name matches any of the provided extensions in the mask.
@@ -168,18 +149,71 @@ func (r *dirReader) includedInMask(name string) bool {
 	return false
 }
 
+// getFileInfo processes an individual file, optionally computes its hash.
+func (r *dirReader) getFileInfo(rel string, file os.FileInfo) {
+	defer r.wg.Done() // Ensure the WaitGroup is decremented when done.
+
+	fi := FileInfo{
+		FileInfo: file,
+		PathRel:  rel,
+	}
+
+	// If a hash function is provided, compute the file's hash.
+	if r.hashFunc != nil {
+		var err error
+		rel = filepath.Join(rel, file.Name())
+		if fi.Hash, err = r.computeHash(rel); err != nil {
+			r.errorChan <- fmt.Errorf("calculate hash sum %s: %w", rel, err)
+		}
+	}
+
+	r.fileChan <- fi
+}
+
 // computeHash computes the hash of the file content using the provided hash function.
 func (r *dirReader) computeHash(filename string) (string, error) {
-	f, err := os.Open(filename)
+	file, err := r.root.Open(filename)
 	if err != nil {
 		return "", err
 	}
-	defer func() { _ = f.Close() }()
+	defer func() { _ = file.Close() }()
 
 	h := r.hashFunc()
-	if _, err = io.Copy(h, f); err != nil {
+	if _, err = io.Copy(h, file); err != nil {
 		return "", err
 	}
 
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// DeleteEmptyDirectories walks the directory tree rooted at the given path and
+// removes any directories that are completely empty.
+// The function returns the first error encountered during traversal, directory reading, or deletion.
+func DeleteEmptyDirectories(root string) error {
+	// Walk the directory tree from bottom to top
+	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		// Skip files and only process directories
+		if !info.IsDir() {
+			return nil
+		}
+
+		// Check if the directory is empty
+		var dirEntries []os.DirEntry
+		if dirEntries, err = os.ReadDir(path); err != nil {
+			return err
+		}
+
+		// If the directory is empty, delete it
+		if len(dirEntries) == 0 {
+			if err = os.Remove(path); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
 }
