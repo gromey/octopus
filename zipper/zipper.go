@@ -21,24 +21,18 @@ import (
 func ZipSrcDir(src string, dest string) func(context.Context, *zip.Writer) error {
 	return func(ctx context.Context, zipWriter *zip.Writer) error {
 		// Walk through the source path to gather files
-		return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		return filepath.WalkDir(src, func(path string, info os.DirEntry, err error) error {
 			if err != nil {
 				return fmt.Errorf("error walking the file tree: %w", err)
 			}
 
 			// Skip the root directory and the zip file itself
-			if path == src || strings.HasSuffix(path, dest) {
+			if path == src || path == dest {
 				return nil
 			}
 
-			// Get the relative path to use as the file's name in the zip archive
-			var rel string
-			if rel, err = filepath.Rel(src, path); err != nil {
-				return fmt.Errorf("error calculating relative path: %w", err)
-			}
-
 			// Add the file to the zip archive
-			return addFileToZip(ctx, zipWriter, path, rel)
+			return addFileToZip(ctx, zipWriter, path, path)
 		})
 	}
 }
