@@ -103,14 +103,14 @@ func (r *dirReader) computeHash(fileInfo *FileInfo) {
 
 	file, err := os.Open(fileInfo.PathRel)
 	if err != nil {
-		slog.Error("Failed to open file", slog.String("path", fileInfo.PathRel), slog.String("error", err.Error()))
+		slog.Error("Failed to open file", slog.Any("error", err))
 		return
 	}
 	defer func() { _ = file.Close() }()
 
 	h := r.hashFunc()
 	if _, err = io.Copy(h, file); err != nil {
-		slog.Error("Failed to compute hash", slog.String("path", fileInfo.PathRel), slog.String("error", err.Error()))
+		slog.Error("Failed to compute hash", slog.Any("error", err))
 		return
 	}
 
