@@ -199,11 +199,13 @@ func addFileToZip(ctx context.Context, zipWriter *zip.Writer, filePath, zipPath 
 	return err
 }
 
-// Unzip extracts the contents of the ZIP file at src into the directory dest.
-// The function enforces a maximum file size for entries, returning an error if any file exceeds maxFileSize.
-// Directories and files are recreated with their original permissions.
-// Any extraction or filesystem error is returned.
-func Unzip(ctx context.Context, src string, dest string, maxFileSize int64) error {
+// Unzip extracts the contents of the ZIP archive at src into the directory dest,
+// creating it with perm if it does not exist. Directories and files within the
+// archive are recreated with their original permissions. Extraction is confined
+// to dest via os.OpenRoot, guarding against path traversal (zip slip) attacks.
+// An error is returned if any entry's uncompressed size exceeds maxFileSize, or
+// if any extraction or filesystem operation fails.
+func Unzip(ctx context.Context, src string, dest string, maxFileSize int64, perm os.FileMode) error {
 	r, err := zip.OpenReader(src)
 	if err != nil {
 		return err
@@ -211,7 +213,7 @@ func Unzip(ctx context.Context, src string, dest string, maxFileSize int64) erro
 	defer closer(ctx, r)
 
 	dest = filepath.Clean(dest)
-	if err = os.MkdirAll(dest, 0750); err != nil {
+	if err = os.MkdirAll(dest, perm); err != nil {
 		return err
 	}
 
@@ -239,10 +241,10 @@ func unzipFile(ctx context.Context, file *zip.File, root *os.Root, maxFileSize i
 
 	// Create a directory if the file is dir
 	if file.FileInfo().IsDir() {
-		return root.MkdirAll(file.Name, 0750)
+		return root.MkdirAll(file.Name, file.Mode())
 	}
 
-	err := root.MkdirAll(filepath.Dir(file.Name), 0750)
+	err := root.MkdirAll(filepath.Dir(file.Name), file.Mode())
 	if err != nil {
 		return err
 	}

@@ -26,6 +26,7 @@ package main
 
 import (
 	"context"
+	"io/fs"
 
 	"github.com/gromey/octopus/zipper"
 )
@@ -69,7 +70,7 @@ func main() {
 	// Unzip with security checks
 	var limit int64 = 10 << 20 // 10 MB limit
 
-	if err = zipper.Unzip(ctx, "archive.zip", "/dst", limit); err != nil {
+	if err = zipper.Unzip(ctx, "archive.zip", "/dst", limit, fs.ModePerm); err != nil {
 		panic(err)
 	}
 }
